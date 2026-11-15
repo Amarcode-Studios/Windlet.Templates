@@ -24,6 +24,7 @@ DEFAULT_TOP_K = 40
 WRITES_FOR_SECONDS = 100
 CHAT_PATH = "/v1/chat/completions"
 HEALTH_PATH = "/health"
+MOST_WEIGHTS = 200_000_000
 LARGEST = {"vocab_size": 100_000, "block_size": 8192, "n_layer": 48, "n_head": 64, "n_embedding_dimension": 4096}
 
 
@@ -48,6 +49,10 @@ def load_checkpoint(file_path, device):
         value = config.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= most:
             raise NotACheckpoint(f"{file_path} says {name} is {value!r}, which must be a whole number from 1 to {most}")
+    width = config["n_embedding_dimension"]
+    weights = config["n_layer"] * 12 * width * width + (config["vocab_size"] + config["block_size"]) * width
+    if weights > MOST_WEIGHTS:
+        raise NotACheckpoint(f"{file_path} states a model of about {weights} weights, more than the {MOST_WEIGHTS} this server loads")
     tokeniser = Tokeniser("".join(characters))
     if tokeniser.vocab_size != config["vocab_size"]:
         raise NotACheckpoint(f"{file_path} holds {tokeniser.vocab_size} characters for a model of {config['vocab_size']}")
@@ -136,7 +141,7 @@ def hung_up(connection):
     try:
         readable, _, _ = select.select([connection], [], [], 0)
         return bool(readable) and connection.recv(1, socket.MSG_PEEK) == b""
-    except OSError:
+    except (OSError, ValueError):
         return True
 
 
@@ -215,8 +220,10 @@ def handler_for(model, tokeniser, step, writes_for_seconds=WRITES_FOR_SECONDS):
                 return
             if hung_up(self.connection):
                 self.close_connection = True
-                return
-            self.answer(200, completion_of(prompt, content, max_tokens))
+            try:
+                self.answer(200, completion_of(prompt, content, max_tokens))
+            except OSError:
+                self.close_connection = True
 
         def send_error(self, code, message=None, explain=None):
             self.hang_up_refusing(code if 400 <= code < 600 else 400, "the request could not be read")

@@ -119,6 +119,7 @@ def test_refuses_a_checkpoint_that_holds_code(tmp_path):
         ({"config": {**dataclasses.asdict(CONFIG), "n_layer": 10**9}}, "n_layer"),
         ({"config": {**dataclasses.asdict(CONFIG), "n_embedding_dimension": 16}}, "do not fit"),
         ({"config": "small"}, "shape"),
+        ({"config": {**dataclasses.asdict(CONFIG), "n_layer": 48, "n_embedding_dimension": 4096}}, "more than the 200000000"),
     ],
 )
 def test_refuses_in_words_a_checkpoint_whose_parts_do_not_fit(tmp_path, change, said):
@@ -230,6 +231,20 @@ def test_takes_a_query_string_on_its_paths_and_refuses_json_too_deep(address):
     status, answer = post(address + CHAT_PATH, None, raw=b"[" * 100_000)
     assert status == 400
     assert "JSON" in answer["error"]["message"]
+
+
+def test_a_caller_that_closes_its_sending_side_still_gets_an_answer_of_what_was_written(address):
+    body = json.dumps(ask([{"role": "user", "content": "abc"}], max_tokens=50)).encode()
+    host, port = address.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port)), timeout=10) as connection:
+        connection.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%s" % (len(body), body))
+        connection.shutdown(socket.SHUT_WR)
+        answer = b""
+        while chunk := connection.recv(65536):
+            answer += chunk
+    head, _, said = answer.partition(b"\r\n\r\n")
+    assert head.split()[1] == b"200"
+    assert json.loads(said)["choices"][0]["finish_reason"] == "stop"
 
 
 def test_stops_at_its_time_and_answers_what_it_wrote():
