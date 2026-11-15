@@ -21,14 +21,20 @@ curl localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
 
 - `messages`: each with its `content` as text. The model is character-level and has no chat format: it reads the messages joined
   by new lines, the end of them that fits its context, and writes on from there. The reply is only what it wrote.
-- `max_tokens`: 1 to 2000 characters, 500 when left out. `temperature`: 0 to 2, 0.8 when left out; 0 always picks the
-  likeliest character. `top_k`: 1 or more, 40 when left out, capped at the number of characters the model knows.
-- The answer is OpenAI's: `choices[0].message.content` holds the reply.
+- `max_tokens`: 1 to 2000 characters, 500 when left out. `temperature`: 0 to 2, 0.8 when left out; below 0.01 it always
+  picks the likeliest character. `top_k`: 1 to 1,000,000, 40 when left out, capped at the number of characters the model knows.
+- The answer is OpenAI's: `choices[0].message.content` holds the reply. `finish_reason` is `length` when it wrote all that
+  was asked, and `stop` when it stopped short: it writes for 100 seconds at most, and stops when the caller hangs up.
 - A refusal is a 400 whose `error.message` says what to change: a character the model never saw in its training text, named;
-  a setting out of its range; a request that is not JSON. A request over 1 MiB is a 413.
-- One message is answered at a time; another waits its turn.
-- The checkpoint is loaded as weights only, so a file that holds code is refused and the server does not start.
-- `GET /health` answers once the model is loaded, with the checkpoint's step.
+  a setting out of its range; a request that is not JSON. A request over 1 MiB is a 413, one with no `Content-Length` a 411,
+  another method a 405; after any of these but a 400 for the request's content the connection is closed.
+- One message is answered at a time; another waits its turn, and is refused first if it would be refused at all.
+- The checkpoint is loaded as weights only. A file that holds code, whose characters are not as many as the model's, whose
+  shape is past what a small GPT has or whose weights do not fit it is refused in words in the order's log, and the server
+  does not start.
+- `GET /health` answers once the model is loaded, with the checkpoint's step, while a message is being answered too.
+- It runs on the machine's GPU when it sees one and on its CPU otherwise. Its PyTorch needs a driver that supports CUDA 13,
+  as the `couch` template's does.
 
 `model.py` and `tokeniser.py` are couch's (github.com/cameronpyne-smith/couch, at c9bdc50), kept here so the image is built
 from this repository alone. A checkpoint from a later couch whose model changed needs them brought up to date, with a test.

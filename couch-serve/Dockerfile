@@ -4,7 +4,7 @@ LABEL org.opencontainers.image.source=https://github.com/Amarcode-Studios/Windle
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir --no-compile -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY model.py tokeniser.py serve.py ./
 

@@ -1,14 +1,15 @@
 import dataclasses
 import json
-import pickle
+import socket
 import threading
 import urllib.error
 import urllib.request
+from http.server import ThreadingHTTPServer
 
 import pytest
 import torch
 from model import GPT, ModelConfig
-from serve import CHAT_PATH, Refused, chat_completion, handler_for, load_checkpoint, prompt_of, read_request
+from serve import CHAT_PATH, MAX_BODY_BYTES, NotACheckpoint, Refused, chat_completion, handler_for, load_checkpoint, prompt_of, read_request
 from tokeniser import Tokeniser
 
 CONFIG = ModelConfig(vocab_size=4, block_size=8, n_layer=1, n_head=1, n_embedding_dimension=8)
@@ -106,18 +107,56 @@ def test_refuses_a_checkpoint_that_holds_code(tmp_path):
             return (print, ("ran",))
 
     torch.save({"state": {}, "config": {}, "tokeniser": [], "step": 0, "extra": Runs()}, tmp_path / "checkpoint.pt")
-    with pytest.raises(pickle.UnpicklingError):
+    with pytest.raises(NotACheckpoint, match="not a checkpoint"):
         load_checkpoint(tmp_path / "checkpoint.pt", "cpu")
+
+
+@pytest.mark.parametrize(
+    "change, said",
+    [
+        ({"tokeniser": ["a", "b"]}, "2 characters for a model of 4"),
+        ({"tokeniser": ["ab", "c", "d", "e"]}, "its characters"),
+        ({"config": {**dataclasses.asdict(CONFIG), "n_layer": 10**9}}, "n_layer"),
+        ({"config": {**dataclasses.asdict(CONFIG), "n_embedding_dimension": 16}}, "do not fit"),
+        ({"config": "small"}, "shape"),
+    ],
+)
+def test_refuses_in_words_a_checkpoint_whose_parts_do_not_fit(tmp_path, change, said):
+    model, tokeniser = small()
+    saved = {"state": model.state_dict(), "config": dataclasses.asdict(CONFIG), "tokeniser": tokeniser.chars, "step": 1, **change}
+    torch.save(saved, tmp_path / "checkpoint.pt")
+    with pytest.raises(NotACheckpoint, match=said):
+        load_checkpoint(tmp_path / "checkpoint.pt", "cpu")
+
+
+def test_a_temperature_too_small_to_divide_by_picks_the_likeliest():
+    model, tokeniser = small()
+    greedy = chat_completion(model, tokeniser, ask([{"role": "user", "content": "ab"}], max_tokens=20, temperature=0))
+    tiny = chat_completion(model, tokeniser, ask([{"role": "user", "content": "ab"}], max_tokens=20, temperature=1e-45))
+    assert tiny["choices"][0]["message"]["content"] == greedy["choices"][0]["message"]["content"]
+
+
+def test_stops_writing_when_told_and_says_it_stopped_short():
+    model, tokeniser = small()
+    asked = iter([False, False, False, True])
+    answer = chat_completion(model, tokeniser, ask([{"role": "user", "content": "ab"}], max_tokens=50), stop=lambda: next(asked))
+    assert len(answer["choices"][0]["message"]["content"]) == 3
+    assert answer["choices"][0]["finish_reason"] == "stop"
+    whole = chat_completion(model, tokeniser, ask([{"role": "user", "content": "ab"}], max_tokens=5))
+    assert whole["choices"][0]["finish_reason"] == "length"
+
+
+def served(writes_for_seconds=100):
+    model, tokeniser = small()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(model, tokeniser, 3, writes_for_seconds))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
 
 
 @pytest.fixture
 def address():
-    from http.server import ThreadingHTTPServer
-
-    model, tokeniser = small()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(model, tokeniser, 3))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server, url = served()
+    yield url
     server.shutdown()
     server.server_close()
 
@@ -148,3 +187,58 @@ def test_a_refusal_over_http_is_a_400_with_its_words_and_anything_else_a_404(add
     assert status == 404
     with urllib.request.urlopen(address + "/health") as response:
         assert json.loads(response.read())["step"] == 3
+
+
+def raw(address, request):
+    host, port = address.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port)), timeout=10) as connection:
+        connection.sendall(request)
+        answer = b""
+        while chunk := connection.recv(65536):
+            answer += chunk
+    head, _, body = answer.partition(b"\r\n\r\n")
+    return int(head.split()[1]), head, body
+
+
+def test_what_is_not_a_chat_request_is_refused_as_json_and_the_connection_closed(address, capsys):
+    secret = b'{"messages": [{"role": "user", "content": "SECRET CHAT TEXT"}]}'
+    post_elsewhere = b"POST /nope HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%s" % (len(secret), secret)
+    cases = [
+        (post_elsewhere + b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n", 404),
+        (b"PUT /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%s" % (len(secret), secret), 405),
+        (b"HEAD /health HTTP/1.1\r\nHost: x\r\n\r\n", 405),
+        (b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n\r\n", 411),
+        (b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: -5\r\n\r\n", 400),
+        (b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % (MAX_BODY_BYTES + 1), 413),
+        (b"nonsense\r\n\r\n", 400),
+    ]
+    for request, status in cases:
+        got, head, body = raw(address, request)
+        assert got == status, request[:40]
+        assert b"Connection: close" in head
+        assert head.count(b"HTTP/1.") == 1, "one answer, then the connection is closed"
+        if not request.startswith(b"HEAD"):
+            assert "message" in json.loads(body)["error"]
+    assert "SECRET" not in capsys.readouterr().out
+
+
+def test_takes_a_query_string_on_its_paths_and_refuses_json_too_deep(address):
+    with urllib.request.urlopen(address + "/health?x=1") as response:
+        assert response.status == 200
+    status, _ = post(address + CHAT_PATH + "?x=1", ask([{"role": "user", "content": "a"}], max_tokens=2))
+    assert status == 200
+    status, answer = post(address + CHAT_PATH, None, raw=b"[" * 100_000)
+    assert status == 400
+    assert "JSON" in answer["error"]["message"]
+
+
+def test_stops_at_its_time_and_answers_what_it_wrote():
+    server, url = served(writes_for_seconds=0)
+    try:
+        status, answer = post(url + CHAT_PATH, ask([{"role": "user", "content": "abc"}], max_tokens=50))
+        assert status == 200
+        assert answer["choices"][0]["message"]["content"] == ""
+        assert answer["choices"][0]["finish_reason"] == "stop"
+    finally:
+        server.shutdown()
+        server.server_close()
