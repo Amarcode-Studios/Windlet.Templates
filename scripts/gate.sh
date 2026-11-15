@@ -17,7 +17,7 @@ for template in "${templates[@]}"; do
   git archive HEAD "$template" ruff.toml | MSYS_NO_PATHCONV=1 docker run --rm -i -v windlet-templates-pip:/root/.cache/pip python:3.14-slim bash -c "
     mkdir /work && cd /work && tar -xf - && cd $template &&
     pip install -q --index-url https://download.pytorch.org/whl/cpu \$(grep '^torch==' requirements.txt) &&
-    pip install -q pytest==9.1.1 ruff &&
+    pip install -q pytest==9.1.1 ruff==0.17.5 &&
     ${steps}true"
   if [ "$?" -ne 0 ]; then echo "FAILED: $template"; failed=1; fi
 done

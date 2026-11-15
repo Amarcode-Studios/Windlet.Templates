@@ -24,5 +24,5 @@ rules, and what its reviewer reads with it.
 
 - Python, the version each Dockerfile names. Dependencies are pinned in the folder's `requirements.txt`.
 - Tests sit beside the code as `*_test.py` and run with pytest; a behaviour has a test. `ruff check` and `ruff format --check`
-  pass. No code comments.
+  pass. No code comments, except in a file taken from another project, which keeps its own (`couch-serve/model.py`, couch's, where they explain the model).
 - Docs move with the change: the README's table and the folder's section state what the image does now, not its history.

@@ -1,12 +1,12 @@
 import dataclasses
 import json
+import pickle
 import threading
 import urllib.error
 import urllib.request
 
 import pytest
 import torch
-
 from model import GPT, ModelConfig
 from serve import CHAT_PATH, Refused, chat_completion, handler_for, load_checkpoint, prompt_of, read_request
 from tokeniser import Tokeniser
@@ -49,7 +49,10 @@ def test_temperature_zero_always_writes_the_same():
 def test_top_k_one_always_writes_the_same_and_a_large_one_is_the_whole_vocabulary():
     model, tokeniser = small()
     request = ask([{"role": "user", "content": "ab"}], max_tokens=20, top_k=1)
-    assert chat_completion(model, tokeniser, request)["choices"][0]["message"]["content"] == chat_completion(model, tokeniser, request)["choices"][0]["message"]["content"]
+    assert (
+        chat_completion(model, tokeniser, request)["choices"][0]["message"]["content"]
+        == chat_completion(model, tokeniser, request)["choices"][0]["message"]["content"]
+    )
     assert read_request(ask([{"role": "user", "content": "a"}], top_k=1000), tokeniser.vocab_size)[3] == 4
 
 
@@ -91,7 +94,10 @@ def test_loads_what_training_saved(tmp_path):
     assert loaded_tokeniser.chars == tokeniser.chars
     assert not loaded.training
     request = ask([{"role": "user", "content": "ab"}], max_tokens=10, temperature=0)
-    assert chat_completion(loaded, loaded_tokeniser, request)["choices"][0]["message"]["content"] == chat_completion(model, tokeniser, request)["choices"][0]["message"]["content"]
+    assert (
+        chat_completion(loaded, loaded_tokeniser, request)["choices"][0]["message"]["content"]
+        == chat_completion(model, tokeniser, request)["choices"][0]["message"]["content"]
+    )
 
 
 def test_refuses_a_checkpoint_that_holds_code(tmp_path):
@@ -100,7 +106,7 @@ def test_refuses_a_checkpoint_that_holds_code(tmp_path):
             return (print, ("ran",))
 
     torch.save({"state": {}, "config": {}, "tokeniser": [], "step": 0, "extra": Runs()}, tmp_path / "checkpoint.pt")
-    with pytest.raises(Exception):
+    with pytest.raises(pickle.UnpicklingError):
         load_checkpoint(tmp_path / "checkpoint.pt", "cpu")
 
 

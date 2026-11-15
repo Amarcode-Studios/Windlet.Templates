@@ -6,7 +6,6 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import torch
-
 from model import GPT, ModelConfig
 from tokeniser import Tokeniser
 

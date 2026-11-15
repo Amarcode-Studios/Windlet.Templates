@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 @dataclass
@@ -31,22 +31,16 @@ class Linear(nn.Module):
 
 class GELU(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return (
-            0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * x**3)))
-        )
+        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * x**3)))
 
 
 class MLP(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.expand = Linear(
-            config.n_embedding_dimension, config.n_embedding_dimension * 4
-        )
+        self.expand = Linear(config.n_embedding_dimension, config.n_embedding_dimension * 4)
         self.non_linearity = GELU()
-        self.project_back = Linear(
-            4 * config.n_embedding_dimension, config.n_embedding_dimension
-        )
+        self.project_back = Linear(4 * config.n_embedding_dimension, config.n_embedding_dimension)
         self.dropout = Dropout(self.config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -133,22 +127,16 @@ class GPT(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.token_embedding = Embedding(
-            config.vocab_size, config.n_embedding_dimension
-        )
-        self.position_embedding = Embedding(
-            config.block_size, config.n_embedding_dimension
-        )
+        self.token_embedding = Embedding(config.vocab_size, config.n_embedding_dimension)
+        self.position_embedding = Embedding(config.block_size, config.n_embedding_dimension)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
         self.final_norm = LayerNorm(config.n_embedding_dimension)
-        self.output_head = Linear(
-            config.n_embedding_dimension, config.vocab_size, bias=False
-        )
+        self.output_head = Linear(config.n_embedding_dimension, config.vocab_size, bias=False)
         self.output_head.weight = self.token_embedding.weight
         self.dropout = Dropout(self.config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, T = x.shape
+        _, T = x.shape
         token_vectors = self.token_embedding(x)
         positions = torch.arange(T, device=x.device)
         position_vectors = self.position_embedding(positions)
@@ -167,13 +155,9 @@ def causal_attention(query, key, value):
         query @ key.transpose(-2, -1) / math.sqrt(head_dim)
     )  # transpose turns (T, d) into (d, T). divide by sqrt(d) to 'normalise' the dot product so weighting isn't so skewed
     T = query.shape[-2]
-    mask = torch.tril(
-        torch.ones(T, T, device=query.device)
-    )  # tril = triangle lower, zeros above diagonal
+    mask = torch.tril(torch.ones(T, T, device=query.device))  # tril = triangle lower, zeros above diagonal
     scores = scores.masked_fill(mask == 0, float("-inf"))  # -inf so exp = 0 weight
-    scores = scores - scores.amax(
-        dim=-1, keepdim=True
-    )  # subtract largest score from the row, "per row" is dim=-1
+    scores = scores - scores.amax(dim=-1, keepdim=True)  # subtract largest score from the row, "per row" is dim=-1
     weights = torch.exp(scores)
     weights = weights / weights.sum(dim=-1, keepdim=True)
     return weights @ value
@@ -193,6 +177,4 @@ def cross_entropy(logits, targets):
 # Softmax is per position, so every reduction is over the vocab dim only (dim=-1).
 def log_probs(x):
     max_logit = torch.amax(x, dim=-1, keepdim=True)
-    return x - (
-        max_logit + torch.log(torch.sum(torch.exp(x - max_logit), dim=-1, keepdim=True))
-    )
+    return x - (max_logit + torch.log(torch.sum(torch.exp(x - max_logit), dim=-1, keepdim=True)))
