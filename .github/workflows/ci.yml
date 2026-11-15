@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/gate.sh all
+
+  images:
+    needs: gate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        template: [couch-serve]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Build and push the image, and say its digest
+        run: |
+          REPO_OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE=ghcr.io/${REPO_OWNER_LC}/windlet-${{ matrix.template }}
+          docker build -t $IMAGE:${{ github.sha }} ${{ matrix.template }}
+          docker push $IMAGE:${{ github.sha }}
+          echo "The catalogue pins this: $(docker inspect --format '{{index .RepoDigests 0}}' $IMAGE:${{ github.sha }})" | tee -a "$GITHUB_STEP_SUMMARY"
